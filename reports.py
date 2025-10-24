@@ -1,6 +1,7 @@
 """
 Complete Reports Engine for CryptoAuditAI
 AI-powered report generation with PDF export capabilities
+OPTIMIZED: Parallel AI calls and fixed file paths
 """
 
 import logging
@@ -8,6 +9,7 @@ import json
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from pathlib import Path
+import asyncio
 
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -200,6 +202,36 @@ Provide detailed analysis covering:
 Be specific and technical while remaining actionable."""
             return await self._call_ollama(context, system_prompt)
 
+    async def generate_recommendations(self, stats: Dict[str, Any], compliance: Dict[str, Any]) -> List[str]:
+        """Generate AI recommendations - OPTIMIZED"""
+        recommendations_context = f"""
+Based on the analysis:
+- Risk Level: {compliance['risk_level']}
+- High Risk Transactions: {stats['high_risk_count']}
+- Compliance Score: {compliance['compliance_score']}/100
+- Unresolved Alerts: {stats['unresolved_alerts']}
+"""
+        recommendations_prompt = "Provide 5 specific, actionable recommendations to improve security and compliance posture."
+        ai_recommendations = await self._call_ollama(recommendations_context, recommendations_prompt)
+
+        recommendations = [
+            line.lstrip('0123456789.-• ').strip()
+            for line in ai_recommendations.split('\n')
+            if line.strip() and (line[0].isdigit() or line.startswith('-') or line.startswith('•'))
+        ][:5]
+        
+        # Fallback recommendations if AI fails
+        if not recommendations:
+            recommendations = [
+                "Review and investigate all high-risk transactions immediately",
+                "Implement enhanced monitoring for transactions above $10,000",
+                "Conduct regular compliance audits on a monthly basis",
+                "Enable real-time alerts for suspicious transaction patterns",
+                "Update KYC documentation for all active wallet addresses"
+            ]
+        
+        return recommendations
+
     def _create_pdf_report(self, report_data: Dict[str, Any], filepath: str):
         """Create PDF report using ReportLab"""
         doc = SimpleDocTemplate(filepath, pagesize=A4)
@@ -284,28 +316,30 @@ Be specific and technical while remaining actionable."""
         self, user_id: int, report_type: str = "comprehensive",
         date_from: Optional[datetime] = None, date_to: Optional[datetime] = None
     ) -> Dict[str, Any]:
-        """Generate a comprehensive audit report"""
+        """
+        Generate a comprehensive audit report
+        OPTIMIZED: Parallel AI calls for faster generation
+        """
+        logger.info(f"🤖 Starting AI report generation for user {user_id}")
+        
+        # Gather stats (no AI)
         stats = await self._gather_user_stats(user_id, date_from, date_to)
         compliance = await get_compliance_assessment(user_id)
-
-        summary = await self.generate_executive_summary(stats, compliance)
-        detailed_analysis = await self.generate_detailed_analysis(user_id, stats)
-
-        recommendations_context = f"""
-        Based on the analysis:
-        - Risk Level: {compliance['risk_level']}
-        - High Risk Transactions: {stats['high_risk_count']}
-        - Compliance Score: {compliance['compliance_score']}/100
-        - Unresolved Alerts: {stats['unresolved_alerts']}
-        """
-        recommendations_prompt = "Provide 5 specific, actionable recommendations to improve security and compliance posture."
-        ai_recommendations = await self._call_ollama(recommendations_context, recommendations_prompt)
-
-        recommendations = [
-            line.lstrip('0123456789.-• ').strip()
-            for line in ai_recommendations.split('\n')
-            if line.strip() and (line[0].isdigit() or line.startswith('-') or line.startswith('•'))
-        ][:5]
+        
+        # Run all AI calls in parallel for speed
+        logger.info(f"⚡ Running 3 AI calls in parallel...")
+        summary_task = self.generate_executive_summary(stats, compliance)
+        analysis_task = self.generate_detailed_analysis(user_id, stats)
+        recommendations_task = self.generate_recommendations(stats, compliance)
+        
+        # Wait for all AI calls to complete
+        summary, detailed_analysis, recommendations = await asyncio.gather(
+            summary_task,
+            analysis_task,
+            recommendations_task
+        )
+        
+        logger.info(f"✅ All AI calls completed")
 
         report_data = {
             "user_id": user_id,
@@ -318,15 +352,24 @@ Be specific and technical while remaining actionable."""
             "generated_at": datetime.now()
         }
 
+        # Create filenames
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        json_filepath = self.reports_dir / f"audit_report_{user_id}_{timestamp}.json"
-        pdf_filepath = self.reports_dir / f"audit_report_{user_id}_{timestamp}.pdf"
+        json_filename = f"audit_report_{user_id}_{timestamp}.json"
+        pdf_filename = f"audit_report_{user_id}_{timestamp}.pdf"
+        
+        json_filepath = self.reports_dir / json_filename
+        pdf_filepath = self.reports_dir / pdf_filename
 
+        # Save JSON report
         with open(json_filepath, 'w') as f:
             json.dump(report_data, f, indent=2, default=str)
 
+        # Generate PDF report
         self._create_pdf_report(report_data, str(pdf_filepath))
+        
+        logger.info(f"📄 Report files created: {pdf_filename}")
 
+        # Save to database with RELATIVE paths (important for download endpoint)
         async with AsyncSessionLocal() as session:
             db_report = AuditReport(
                 user_id=user_id,
@@ -341,14 +384,14 @@ Be specific and technical while remaining actionable."""
                 total_transactions=stats['total_transactions'],
                 flagged_transactions=stats['high_risk_count'],
                 compliance_score=compliance['compliance_score'],
-                pdf_path=str(pdf_filepath),
-                json_path=str(json_filepath)
+                pdf_path=pdf_filename,  # Store filename only, not full path
+                json_path=json_filename  # Store filename only, not full path
             )
             session.add(db_report)
             await session.commit()
             await session.refresh(db_report)
 
-            logger.info(f"Generated comprehensive report for user {user_id}: {pdf_filepath.name}")
+            logger.info(f"✅ Report saved to database with ID: {db_report.id}")
 
         return {
             "report_id": db_report.id,

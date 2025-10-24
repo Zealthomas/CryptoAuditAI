@@ -1,6 +1,7 @@
 """
 Complete CryptoAuditAI Backend
 Production-ready FastAPI server with real crypto integrations and AI analysis
+UPGRADED: AI only for reports and chat, fast programmatic scoring for audits
 """
 
 import os
@@ -9,6 +10,7 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 import uvicorn
+import numpy as np
 
 # FastAPI and dependencies
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Form, Query
@@ -31,8 +33,7 @@ from models import (
     AlertResponse, StatsResponse, WalletCreate, ExchangeCreate
 )
 from ai_engine import (
-    ai_engine, analyze_transaction_risk, detect_user_patterns, 
-    get_compliance_assessment, create_risk_alert
+    ai_engine, detect_user_patterns, get_compliance_assessment
 )
 from reports import generate_audit_report, get_user_reports
 from retrieval import router as retrieval_router
@@ -52,7 +53,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware - FIXED VERSION
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -60,10 +61,10 @@ app.add_middleware(
         "http://localhost:5500", 
         "http://127.0.0.1:3000",
         "http://localhost:3000",
-        "*"  # Allow all origins for development - REMOVE in production
+        "*"
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # Explicitly include OPTIONS
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=[
         "Accept",
         "Accept-Language", 
@@ -74,8 +75,8 @@ app.add_middleware(
         "Origin",
         "X-CSRFToken"
     ],
-    expose_headers=["*"],  # Allow frontend to access response headers
-    max_age=600  # Cache preflight requests for 10 minutes
+    expose_headers=["*"],
+    max_age=600
 )
 
 # Include retrieval router
@@ -95,6 +96,124 @@ if settings.INFURA_PROJECT_ID:
         logger.error(f"Failed to connect to Infura: {e}")
 
 # -------------------------
+# PROGRAMMATIC RISK SCORING (No AI)
+# -------------------------
+
+def calculate_risk_score(transaction_data: Dict) -> Dict[str, Any]:
+    """
+    Fast programmatic risk scoring without AI
+    Returns risk_score, risk_level, anomaly_detected, compliance_flags, counterparty_risk
+    """
+    risk_factors = []
+    compliance_flags = []
+    counterparty_flags = []
+    
+    amount = transaction_data.get('amount', 0)
+    gas_price = transaction_data.get('gas_price', 0)
+    fee = transaction_data.get('fee', 0)
+    status = transaction_data.get('status', 'confirmed')
+    timestamp = transaction_data.get('timestamp', datetime.now())
+    from_address = transaction_data.get('from_address', '')
+    to_address = transaction_data.get('to_address', '')
+    source = transaction_data.get('source', 'unknown')
+    
+    # Amount-based risk
+    if amount > 100000:
+        risk_factors.append(30)
+        compliance_flags.append("LARGE_TRANSACTION")
+    elif amount > 50000:
+        risk_factors.append(20)
+    elif amount > 10000:
+        risk_factors.append(10)
+        compliance_flags.append("CTR_THRESHOLD")
+    
+    # Structuring detection
+    if 9000 <= amount <= 9999:
+        risk_factors.append(40)
+        compliance_flags.append("STRUCTURING_SUSPICION")
+    
+    # Round amount pattern
+    if amount % 1000 == 0 and amount >= 5000:
+        risk_factors.append(15)
+        compliance_flags.append("ROUND_AMOUNT_PATTERN")
+    
+    # Gas price anomalies (for Ethereum)
+    if gas_price and gas_price > 100:
+        risk_factors.append(15)
+        compliance_flags.append("HIGH_GAS_PRICE")
+    
+    # Transaction status
+    if status == "failed":
+        risk_factors.append(25)
+        compliance_flags.append("FAILED_TRANSACTION")
+    
+    # Time-based patterns (outside business hours)
+    hour = timestamp.hour if hasattr(timestamp, 'hour') else datetime.now().hour
+    if hour < 6 or hour > 22:
+        risk_factors.append(10)
+        compliance_flags.append("UNUSUAL_TIMING")
+    
+    # Fee anomalies
+    if fee and amount > 0:
+        fee_ratio = fee / amount
+        if fee_ratio > 0.05:
+            risk_factors.append(20)
+            compliance_flags.append("HIGH_FEE_RATIO")
+    
+    # COUNTERPARTY RISK ANALYSIS
+    counterparty_risk = 0
+    
+    # Check for known high-risk address patterns
+    if to_address:
+        to_lower = to_address.lower()
+        # Mixing service patterns (simplified - in production use real blacklists)
+        if any(pattern in to_lower for pattern in ['mixer', 'tornado', 'blender']):
+            counterparty_risk += 40
+            counterparty_flags.append("MIXING_SERVICE")
+        
+        # Check for new/suspicious address (very short addresses are often test/suspicious)
+        if len(to_address) < 40 and len(to_address) > 0:
+            counterparty_risk += 15
+            counterparty_flags.append("SUSPICIOUS_ADDRESS_FORMAT")
+    
+    # Source reputation
+    high_risk_sources = ['unknown', 'p2p', 'localbitcoins', 'paxful']
+    if source.lower() in high_risk_sources:
+        counterparty_risk += 20
+        counterparty_flags.append("HIGH_RISK_SOURCE")
+    
+    # Add counterparty risk to overall risk
+    risk_factors.append(counterparty_risk)
+    
+    # Calculate final risk score
+    risk_score = min(sum(risk_factors), 100)
+    
+    # Determine risk level
+    if risk_score >= 80:
+        risk_level = "critical"
+    elif risk_score >= 60:
+        risk_level = "high"
+    elif risk_score >= 40:
+        risk_level = "medium"
+    else:
+        risk_level = "low"
+    
+    # Simple anomaly detection
+    anomaly_detected = risk_score >= 70 or len(compliance_flags) >= 3
+    
+    # Combine all flags
+    all_flags = compliance_flags + counterparty_flags
+    
+    return {
+        "risk_score": risk_score,
+        "risk_level": risk_level,
+        "anomaly_detected": anomaly_detected,
+        "compliance_flags": all_flags,
+        "counterparty_risk": counterparty_risk,
+        "counterparty_flags": counterparty_flags
+    }
+
+# -------------------------
 # Crypto Integration Functions
 # -------------------------
 
@@ -107,10 +226,8 @@ async def fetch_ethereum_transactions(address: str, limit: int = 100) -> List[Di
         return generate_mock_ethereum_transactions(address, limit)
     
     try:
-        # Get latest block
         latest_block = w3.eth.block_number
         
-        # Check recent blocks for transactions to/from this address
         for i in range(min(100, latest_block)):
             block_number = latest_block - i
             block = w3.eth.get_block(block_number, full_transactions=True)
@@ -119,7 +236,6 @@ async def fetch_ethereum_transactions(address: str, limit: int = 100) -> List[Di
                 if (tx['to'] and tx['to'].lower() == address.lower()) or \
                    (tx['from'] and tx['from'].lower() == address.lower()):
                     
-                    # Get transaction receipt for gas used
                     receipt = w3.eth.get_transaction_receipt(tx['hash'])
                     
                     transactions.append({
@@ -165,7 +281,7 @@ def generate_mock_ethereum_transactions(address: str, limit: int) -> List[Dict]:
             'to_address': address if random.choice([True, False]) else f"0x{''.join(random.choices('0123456789abcdef', k=40))}",
             'gas_price': gas_price,
             'gas_used': gas_used,
-            'fee': (gas_price * gas_used) / 1e9,  # Convert to ETH
+            'fee': (gas_price * gas_used) / 1e9,
             'block_number': 18500000 + i,
             'timestamp': tx_time,
             'status': random.choices(['confirmed', 'failed'], weights=[95, 5])[0]
@@ -179,14 +295,12 @@ async def fetch_exchange_transactions(exchange_name: str, api_key: str = None, l
         if exchange_name.lower() == 'binance' and api_key:
             exchange = ccxt.binance({
                 'apiKey': api_key,
-                'secret': 'dummy_secret',  # Would need real secret
-                'sandbox': True  # Use testnet
+                'secret': 'dummy_secret',
+                'sandbox': True
             })
         else:
-            # Use mock data if no API key or unsupported exchange
             return generate_mock_exchange_transactions(exchange_name, limit)
         
-        # Fetch trades (would need proper API keys and secrets)
         trades = await exchange.fetch_my_trades(limit=limit)
         
         transactions = []
@@ -196,7 +310,7 @@ async def fetch_exchange_transactions(exchange_name: str, api_key: str = None, l
                 'amount': trade['amount'],
                 'asset': trade['symbol'].split('/')[0],
                 'price': trade['price'],
-                'side': trade['side'],  # buy/sell
+                'side': trade['side'],
                 'fee': trade['fee']['cost'],
                 'timestamp': datetime.fromtimestamp(trade['timestamp'] / 1000),
                 'status': 'confirmed'
@@ -232,7 +346,7 @@ def generate_mock_exchange_transactions(exchange_name: str, limit: int) -> List[
             'asset': asset,
             'price': price,
             'side': side,
-            'fee': amount * 0.001,  # 0.1% fee
+            'fee': amount * 0.001,
             'timestamp': base_time + timedelta(hours=random.randint(1, 720)),
             'status': 'confirmed'
         })
@@ -261,7 +375,10 @@ async def ingest_transactions(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
-    """Ingest transactions from wallets or exchanges"""
+    """
+    Ingest transactions from wallets or exchanges
+    UPGRADED: Uses programmatic scoring only (no AI calls)
+    """
     
     async def process_ingestion():
         try:
@@ -284,7 +401,7 @@ async def ingest_transactions(
                     transactions_data.append({
                         'source': request.exchange_name.lower(),
                         'transaction_type': 'trade',
-                        'hash': None,  # Exchange transactions don't have blockchain hash
+                        'hash': None,
                         'amount': tx_data['amount'],
                         'asset': tx_data['asset'],
                         'fee': tx_data['fee'],
@@ -294,10 +411,13 @@ async def ingest_transactions(
                         'to_address': None
                     })
             
-            # Store transactions in database
+            # Store transactions with programmatic risk scoring
             async with AsyncSessionLocal() as session:
                 new_transactions = []
                 for tx_data in transactions_data:
+                    # Calculate risk using programmatic scoring (NO AI)
+                    risk_info = calculate_risk_score(tx_data)
+                    
                     transaction = Transaction(
                         user_id=request.user_id,
                         hash=tx_data.get('hash'),
@@ -311,30 +431,19 @@ async def ingest_transactions(
                         fee=tx_data.get('fee', 0),
                         gas_price=tx_data.get('gas_price'),
                         gas_used=tx_data.get('gas_used'),
-                        timestamp=tx_data['timestamp']
+                        timestamp=tx_data['timestamp'],
+                        # Apply programmatic risk scoring
+                        risk_score=risk_info['risk_score'],
+                        risk_level=risk_info['risk_level'],
+                        anomaly_detected=risk_info['anomaly_detected'],
+                        compliance_flags=risk_info['compliance_flags'],
+                        analyzed_at=datetime.now()
                     )
                     session.add(transaction)
                     new_transactions.append(transaction)
                 
                 await session.commit()
-                
-                # Analyze each transaction for risk
-                for transaction in new_transactions:
-                    await session.refresh(transaction)
-                    risk_analysis = await analyze_transaction_risk(transaction.id)
-                    
-                    # Update transaction with risk analysis
-                    transaction.risk_score = risk_analysis.risk_score
-                    transaction.risk_level = risk_analysis.risk_level
-                    transaction.anomaly_detected = risk_analysis.anomaly_detected
-                    transaction.compliance_flags = risk_analysis.compliance_flags
-                    transaction.analyzed_at = datetime.now()
-                    
-                    # Create alerts if necessary
-                    await create_risk_alert(request.user_id, transaction.id, risk_analysis)
-                
-                await session.commit()
-                logger.info(f"Ingested and analyzed {len(new_transactions)} transactions for user {request.user_id}")
+                logger.info(f"✅ Ingested {len(new_transactions)} transactions for user {request.user_id} (programmatic scoring only)")
         
         except Exception as e:
             logger.error(f"Ingestion failed: {e}")
@@ -343,7 +452,7 @@ async def ingest_transactions(
     
     return {
         "status": "success",
-        "message": "Transaction ingestion started",
+        "message": "Transaction ingestion started (fast programmatic scoring)",
         "user_id": request.user_id
     }
 
@@ -353,14 +462,17 @@ async def run_audit(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
-    """Run comprehensive AI audit on user's transactions"""
+    """
+    Run comprehensive audit on user's transactions
+    UPGRADED: Pattern detection only (no AI calls during audit)
+    """
     
     async def process_audit():
         try:
-            # Detect suspicious patterns
+            # Detect suspicious patterns (programmatic, no AI)
             patterns = await detect_user_patterns(request.user_id)
             
-            # Create alerts for patterns
+            # Create alerts for detected patterns
             for pattern in patterns:
                 await ai_engine.create_alert(
                     user_id=request.user_id,
@@ -371,10 +483,7 @@ async def run_audit(
                     alert_type="pattern"
                 )
             
-            # Generate compliance assessment
-            compliance = await get_compliance_assessment(request.user_id)
-            
-            logger.info(f"Audit completed for user {request.user_id}: {len(patterns)} patterns detected")
+            logger.info(f"✅ Audit completed for user {request.user_id}: {len(patterns)} patterns detected (no AI used)")
             
         except Exception as e:
             logger.error(f"Audit failed for user {request.user_id}: {e}")
@@ -383,7 +492,7 @@ async def run_audit(
     
     return {
         "status": "success",
-        "message": "AI audit started",
+        "message": "Audit started (pattern detection only, no AI)",
         "user_id": request.user_id,
         "report_type": request.report_type
     }
@@ -393,8 +502,13 @@ async def generate_report(
     request: AuditRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """Generate comprehensive audit report"""
+    """
+    Generate comprehensive audit report
+    ✅ AI IS USED HERE for report generation
+    """
     try:
+        logger.info(f"🤖 Generating AI-powered report for user {request.user_id}")
+        
         report_data = await generate_audit_report(
             user_id=request.user_id,
             report_type=request.report_type,
@@ -402,11 +516,13 @@ async def generate_report(
             date_to=request.date_to
         )
         
+        logger.info(f"✅ AI report generated successfully")
+        
         return AuditReportResponse(
             id=report_data["report_id"],
             title=f"{request.report_type.title()} Audit Report",
             report_type=request.report_type,
-            summary=report_data["summary"][:500],  # Truncate for response
+            summary=report_data["summary"][:500],
             overall_risk_score=report_data["overall_risk_score"],
             compliance_score=report_data["compliance_score"],
             total_transactions=report_data["total_transactions"],
@@ -420,120 +536,199 @@ async def generate_report(
         logger.error(f"Report generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
 
-@app.get("/reports/{report_id}/download")
-async def download_report(report_id: int, format: str = Query("pdf", pattern="^(pdf|json)$")):
-    """Download generated report"""
+@app.get("/debug/report/{report_id}")
+async def debug_report(report_id: int):
+    """Debug endpoint to check report database entry"""
     async with AsyncSessionLocal() as session:
         report = await session.get(AuditReport, report_id)
         if not report:
-            raise HTTPException(status_code=404, detail="Report not found")
+            return {"error": "Report not found"}
         
-        file_path = report.pdf_path if format == "pdf" else report.json_path
-        if not file_path or not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail=f"Report file not found")
+        from pathlib import Path
+        reports_dir = Path(settings.REPORTS_DIR).resolve()
         
-        filename = f"audit_report_{report_id}.{format}"
-        media_type = "application/pdf" if format == "pdf" else "application/json"
+        pdf_filename = report.pdf_path
+        json_filename = report.json_path
         
-        return FileResponse(
-            path=file_path,
-            filename=filename,
-            media_type=media_type
-        )
+        # Check both absolute and relative paths
+        pdf_path_abs = Path(pdf_filename) if Path(pdf_filename).is_absolute() else reports_dir / pdf_filename
+        json_path_abs = Path(json_filename) if Path(json_filename).is_absolute() else reports_dir / json_filename
+        
+        return {
+            "report_id": report_id,
+            "database_info": {
+                "pdf_path": report.pdf_path,
+                "json_path": report.json_path,
+                "created_at": report.created_at.isoformat()
+            },
+            "filesystem_check": {
+                "reports_dir": str(reports_dir),
+                "reports_dir_exists": reports_dir.exists(),
+                "pdf_path_resolved": str(pdf_path_abs),
+                "pdf_exists": pdf_path_abs.exists(),
+                "json_path_resolved": str(json_path_abs),
+                "json_exists": json_path_abs.exists()
+            },
+            "files_in_reports_dir": [f.name for f in reports_dir.glob("*")] if reports_dir.exists() else []
+        }
+
+@app.get("/reports/{report_id}/download")
+async def download_report(report_id: int, format: str = Query("pdf", pattern="^(pdf|json)$")):
+    """Download generated report - FIXED: Complete Windows path handling with validation"""
+    try:
+        async with AsyncSessionLocal() as session:
+            report = await session.get(AuditReport, report_id)
+            if not report:
+                logger.error(f"❌ Report {report_id} not found in database")
+                raise HTTPException(status_code=404, detail="Report not found")
+            
+            # Get the filename from database
+            filename = report.pdf_path if format == "pdf" else report.json_path
+            if not filename:
+                logger.error(f"❌ Report {report_id} has no {format} path in database")
+                raise HTTPException(status_code=404, detail=f"Report {format.upper()} path not found in database")
+            
+            # Construct full path - Windows-compatible
+            from pathlib import Path
+            reports_dir = Path(settings.REPORTS_DIR).resolve()
+            
+            logger.info(f"=" * 60)
+            logger.info(f"📥 DOWNLOAD REQUEST for Report {report_id}")
+            logger.info(f"=" * 60)
+            logger.info(f"Format requested: {format}")
+            logger.info(f"DB filename: {filename}")
+            logger.info(f"Reports directory: {reports_dir}")
+            logger.info(f"Reports dir exists: {reports_dir.exists()}")
+            
+            # Convert to Path object for proper handling
+            filename_path = Path(filename)
+            logger.info(f"Filename is absolute: {filename_path.is_absolute()}")
+            
+            # If it's already an absolute path, use it directly
+            if filename_path.is_absolute():
+                file_path = filename_path.resolve()
+                logger.info(f"Using absolute path from DB: {file_path}")
+            else:
+                # Otherwise, join with reports directory
+                file_path = (reports_dir / filename).resolve()
+                logger.info(f"Constructed path: {file_path}")
+            
+            logger.info(f"Final resolved path: {file_path}")
+            logger.info(f"File exists: {file_path.exists()}")
+            logger.info(f"File is file: {file_path.is_file()}")
+            
+            if file_path.exists() and file_path.is_file():
+                import os
+                file_size = os.path.getsize(file_path)
+                logger.info(f"File size: {file_size} bytes")
+            
+            if not file_path.exists():
+                logger.error(f"=" * 60)
+                logger.error(f"❌ FILE NOT FOUND")
+                logger.error(f"=" * 60)
+                # List what's actually in the reports directory
+                try:
+                    all_files = list(reports_dir.glob("*"))
+                    logger.error(f"📁 Contents of {reports_dir}:")
+                    logger.error(f"Total files: {len(all_files)}")
+                    pdf_files = [f for f in all_files if f.suffix == '.pdf']
+                    json_files = [f for f in all_files if f.suffix == '.json']
+                    logger.error(f"PDF files: {len(pdf_files)}")
+                    logger.error(f"JSON files: {len(json_files)}")
+                    
+                    # Show relevant files
+                    logger.error(f"\nRelevant files containing 'audit_report_1_20251024':")
+                    for f in all_files:
+                        if 'audit_report_1_20251024' in f.name:
+                            logger.error(f"   - {f.name} ({os.path.getsize(f)} bytes)")
+                except Exception as e:
+                    logger.error(f"Could not list directory: {e}")
+                
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Report file not found at: {file_path}"
+                )
+            
+            if not file_path.is_file():
+                logger.error(f"❌ Path exists but is not a file: {file_path}")
+                raise HTTPException(status_code=500, detail="Invalid file path")
+            
+            # Get file size for validation
+            import os
+            file_size = os.path.getsize(file_path)
+            logger.info(f"✅ File found! Size: {file_size} bytes")
+            
+            if file_size == 0:
+                logger.error(f"⚠️  WARNING: File size is 0 bytes!")
+                raise HTTPException(status_code=500, detail="Report file is empty")
+            
+            media_type = "application/pdf" if format == "pdf" else "application/json"
+            
+            logger.info(f"📤 Serving file: {file_path.name}")
+            logger.info(f"   Media type: {media_type}")
+            logger.info(f"   File size: {file_size:,} bytes")
+            logger.info(f"=" * 60)
+            
+            # Return the file
+            return FileResponse(
+                path=str(file_path),
+                filename=f"audit_report_{report_id}.{format}",
+                media_type=media_type
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in download endpoint: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 @app.get("/users/{user_id}/stats", response_model=StatsResponse)
 async def get_user_stats(user_id: int, db: AsyncSession = Depends(get_db)):
     """Get user statistics"""
-
-    # -------------------------
-    # Total transactions
-    # -------------------------
+    
     total_transactions_result = await db.execute(
         select(func.count(Transaction.id)).where(Transaction.user_id == user_id)
     )
     total_transactions = total_transactions_result.scalar() or 0
-
-    # -------------------------
-    # High-risk transactions
-    # -------------------------
+    
     high_risk_result = await db.execute(
         select(func.count(Transaction.id))
         .where(Transaction.user_id == user_id)
         .where(Transaction.risk_level.in_(["high", "critical"]))
     )
     high_risk_transactions = high_risk_result.scalar() or 0
-
-    # -------------------------
-    # Wallet count
-    # -------------------------
+    
     wallet_count_result = await db.execute(
         select(func.count(Wallet.id)).where(Wallet.user_id == user_id)
     )
     total_wallets = wallet_count_result.scalar() or 0
-
-    # -------------------------
-    # Exchange count
-    # -------------------------
+    
     exchange_count_result = await db.execute(
         select(func.count(Exchange.id)).where(Exchange.user_id == user_id)
     )
     total_exchanges = exchange_count_result.scalar() or 0
-
-    # -------------------------
-    # Unresolved alerts
-    # -------------------------
+    
     unresolved_alerts_result = await db.execute(
         select(func.count(Alert.id))
         .where(Alert.user_id == user_id)
         .where(Alert.is_resolved == False)
     )
     unresolved_alerts = unresolved_alerts_result.scalar() or 0
-
-    # -------------------------
-    # Last sync (latest transaction timestamp)
-    # -------------------------
+    
     last_transaction_result = await db.execute(
-        select(Transaction.timestamp)   # 👈 use timestamp (not created_at)
+        select(Transaction.timestamp)
         .where(Transaction.user_id == user_id)
         .order_by(desc(Transaction.timestamp))
         .limit(1)
     )
     last_sync = last_transaction_result.scalar_one_or_none()
-
-    # -------------------------
-    # Return structured response
-    # -------------------------
+    
     return StatsResponse(
         total_transactions=total_transactions,
         total_wallets=total_wallets,
         total_exchanges=total_exchanges,
-        high_risk_transactions=high_risk_transactions,
-        unresolved_alerts=unresolved_alerts,
-        last_sync=last_sync
-    )
-
-    
-    # Unresolved alerts
-    unresolved_alerts_result = await db.execute(
-        select(func.count(Alert.id))
-        .where(Alert.user_id == user_id)
-        .where(Alert.is_resolved == False)
-    )
-    unresolved_alerts = unresolved_alerts_result.scalar() or 0
-    
-    # Last sync time
-    last_transaction_result = await db.execute(
-        select(Transaction.created_at)
-        .where(Transaction.user_id == user_id)
-        .order_by(desc(Transaction.created_at))
-        .limit(1)
-    )
-    last_sync = last_transaction_result.scalar()
-    
-    return StatsResponse(
-        total_transactions=total_transactions,
-        total_wallets=wallet_count,
-        total_exchanges=exchange_count,
         high_risk_transactions=high_risk_transactions,
         unresolved_alerts=unresolved_alerts,
         last_sync=last_sync
@@ -600,7 +795,6 @@ async def get_user_reports_endpoint(user_id: int, limit: int = Query(10, le=50))
 @app.post("/users/{user_id}/wallets", response_model=Dict[str, Any])
 async def add_wallet(user_id: int, wallet: WalletCreate, db: AsyncSession = Depends(get_db)):
     """Add a new wallet for the user"""
-    # Check if wallet already exists
     existing_wallet = await db.execute(
         select(Wallet).where(Wallet.address == wallet.address)
     )
@@ -650,27 +844,32 @@ async def create_mock_transactions(user_id: int, count: int = Query(10, le=100))
     
     async with AsyncSessionLocal() as session:
         for i in range(count):
+            tx_data = {
+                'amount': random.uniform(10, 5000),
+                'gas_price': random.uniform(20, 100),
+                'fee': random.uniform(0.001, 0.1),
+                'status': random.choices(['confirmed', 'failed'], weights=[95, 5])[0],
+                'timestamp': base_time + timedelta(hours=random.randint(1, 720))
+            }
+            
+            # Calculate risk programmatically
+            risk_info = calculate_risk_score(tx_data)
+            
             transaction = Transaction(
                 user_id=user_id,
                 hash=f"0x{''.join(random.choices('0123456789abcdef', k=64))}",
-                amount=random.uniform(10, 5000),
+                amount=tx_data['amount'],
                 asset=random.choice(['BTC', 'ETH', 'USDT', 'BNB']),
                 transaction_type=random.choice(['send', 'receive', 'trade']),
                 source=random.choice(['ethereum', 'binance', 'coinbase']),
-                status=random.choices(['confirmed', 'failed'], weights=[95, 5])[0],
-                timestamp=base_time + timedelta(hours=random.randint(1, 720)),
-                fee=random.uniform(0.001, 0.1)
+                status=tx_data['status'],
+                timestamp=tx_data['timestamp'],
+                fee=tx_data['fee'],
+                risk_score=risk_info['risk_score'],
+                risk_level=risk_info['risk_level'],
+                anomaly_detected=risk_info['anomaly_detected'],
+                compliance_flags=risk_info['compliance_flags']
             )
-            
-            # Add some risk factors for testing
-            if random.random() < 0.2:  # 20% high risk
-                transaction.risk_level = random.choice(['high', 'critical'])
-                transaction.risk_score = random.uniform(70, 95)
-                transaction.anomaly_detected = True
-                transaction.compliance_flags = ['LARGE_TRANSACTION', 'UNUSUAL_TIMING']
-            else:
-                transaction.risk_level = random.choice(['low', 'medium'])
-                transaction.risk_score = random.uniform(5, 50)
             
             session.add(transaction)
             mock_transactions.append(transaction)
@@ -681,53 +880,17 @@ async def create_mock_transactions(user_id: int, count: int = Query(10, le=100))
         "status": "created",
         "count": len(mock_transactions),
         "user_id": user_id,
-        "message": f"Created {count} mock transactions for testing"
+        "message": f"Created {count} mock transactions with programmatic scoring"
     }
 
-# -------------------------
-# Startup and Shutdown Events
-# -------------------------
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the application"""
-    logger.info("Starting CryptoAuditAI Backend...")
-    
-    # Initialize database
-    await init_db()
-    
-    # Test database connection
-    db_status = await test_connection()
-    if not db_status:
-        logger.error("Database connection failed!")
-    
-    # Test Ollama connection
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{settings.OLLAMA_HOST}/api/tags", timeout=5.0)
-            if response.status_code == 200:
-                models = response.json().get('models', [])
-                logger.info(f"Ollama connected. Available models: {[m['name'] for m in models]}")
-            else:
-                logger.warning("Ollama not responding properly")
-    except Exception as e:
-        logger.error(f"Failed to connect to Ollama: {e}")
-    
-    logger.info("CryptoAuditAI Backend started successfully!")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up on shutdown"""
-    logger.info("Shutting down CryptoAuditAI Backend...")
-
-
-
-# Chat endpoint for the frontend chat feature
 @app.post("/chat")
 async def chat_endpoint(request: dict):
-    """Enhanced chat endpoint with proper Ollama integration"""
-    logger.info(f"Chat request received: {request}")
-    query = request.get("query") or request.get("message", "")  # Support both formats
+    """
+    Enhanced chat endpoint with proper Ollama integration
+    ✅ AI IS USED HERE for conversational responses
+    """
+    logger.info(f"🤖 Chat request received")
+    query = request.get("query") or request.get("message", "")
     user_id = request.get("user_id", 1)
     
     if not query:
@@ -749,7 +912,7 @@ async def chat_endpoint(request: dict):
         if key in query_lower:
             return {"response": response}
     
-    # Try Ollama for complex queries
+    # Use Ollama for complex queries
     if hasattr(settings, 'OLLAMA_HOST') and settings.OLLAMA_HOST:
         try:
             logger.info(f"Sending request to Ollama at {settings.OLLAMA_HOST}")
@@ -804,7 +967,7 @@ Provide a helpful, professional response about crypto auditing, risk analysis, o
                 
                 if ollama_response.status_code == 200:
                     result = ollama_response.json()
-                    logger.info(f"Ollama response: {result}")
+                    logger.info(f"Ollama response received")
                     
                     ai_response = result.get("response", "").strip()
                     if ai_response:
@@ -829,13 +992,72 @@ Provide a helpful, professional response about crypto auditing, risk analysis, o
     }
 
 # -------------------------
+# Startup and Shutdown Events
+# -------------------------
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the application"""
+    logger.info("⚡ Starting CryptoAuditAI Backend...")
+    logger.info("🔧 UPGRADED VERSION: AI only for reports and chat")
+    
+    # Initialize database
+    logger.info("📊 Initializing database...")
+    await init_db()
+    
+    # Test database connection
+    db_status = await test_connection()
+    if db_status:
+        logger.info("✅ Database connected")
+    else:
+        logger.error("❌ Database connection failed!")
+    
+    # Test Ollama connection (non-blocking)
+    try:
+        logger.info("🤖 Testing Ollama connection...")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{settings.OLLAMA_HOST}/api/tags", timeout=5.0)
+            if response.status_code == 200:
+                models = response.json().get('models', [])
+                model_names = [m['name'] for m in models]
+                logger.info(f"✅ Ollama connected. Models: {model_names}")
+                
+                # Check if our model is available
+                if settings.OLLAMA_MODEL in model_names or any(settings.OLLAMA_MODEL in m for m in model_names):
+                    logger.info(f"✅ Model '{settings.OLLAMA_MODEL}' is available")
+                else:
+                    logger.warning(f"⚠️  Model '{settings.OLLAMA_MODEL}' not found. Available: {model_names}")
+            else:
+                logger.warning("⚠️  Ollama not responding properly")
+    except httpx.TimeoutException:
+        logger.warning("⚠️  Ollama connection timeout (server may be starting)")
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to connect to Ollama: {e}")
+    
+    logger.info("=" * 60)
+    logger.info("🚀 CryptoAuditAI Backend Ready!")
+    logger.info("=" * 60)
+    logger.info("📍 Endpoints:")
+    logger.info("   ⚡ /ingest  - Fast programmatic scoring (no AI)")
+    logger.info("   ⚡ /audit   - Pattern detection only (no AI)")
+    logger.info("   🤖 /report  - AI-powered report generation")
+    logger.info("   🤖 /chat    - AI-powered conversational interface")
+    logger.info("=" * 60)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up on shutdown"""
+    logger.info("Shutting down CryptoAuditAI Backend...")
+
+# -------------------------
 # Main Entry Point
 # -------------------------
 
 if __name__ == "__main__":
-    logger.info("Starting CryptoAuditAI Backend with Mistral Integration")
+    logger.info("Starting CryptoAuditAI Backend - UPGRADED VERSION")
     logger.info(f"Ollama URL: {settings.OLLAMA_HOST}")
     logger.info(f"Default Model: {settings.OLLAMA_MODEL}")
+    logger.info("AI Usage: Reports & Chat only (not during audits)")
     
     uvicorn.run(
         "main:app",
