@@ -63,7 +63,7 @@ class CryptoAIEngine:
                     "options": {
                         "temperature": 0.3,
                         "top_p": 0.9,
-                        "num_predict": 1024
+                        "num_predict": 512
                     }
                 }
                 

@@ -574,115 +574,61 @@ async def debug_report(report_id: int):
 
 @app.get("/reports/{report_id}/download")
 async def download_report(report_id: int, format: str = Query("pdf", pattern="^(pdf|json)$")):
-    """Download generated report - FIXED: Complete Windows path handling with validation"""
-    try:
-        async with AsyncSessionLocal() as session:
-            report = await session.get(AuditReport, report_id)
-            if not report:
-                logger.error(f"❌ Report {report_id} not found in database")
-                raise HTTPException(status_code=404, detail="Report not found")
+    """Download generated report - FIXED: Proper path resolution"""
+    async with AsyncSessionLocal() as session:
+        report = await session.get(AuditReport, report_id)
+        if not report:
+            logger.error(f"Report {report_id} not found in database")
+            raise HTTPException(status_code=404, detail="Report not found")
+        
+        # Get the filename from database
+        filename = report.pdf_path if format == "pdf" else report.json_path
+        if not filename:
+            logger.error(f"Report {report_id} has no {format} path in database")
+            raise HTTPException(status_code=404, detail=f"Report {format.upper()} path not found in database")
+        
+        # Construct full path - handle both absolute and relative paths
+        from pathlib import Path
+        reports_dir = Path(settings.REPORTS_DIR).resolve()
+        
+        # If it's already an absolute path, use it directly
+        if Path(filename).is_absolute():
+            file_path = Path(filename)
+        else:
+            # Otherwise, join with reports directory
+            file_path = reports_dir / Path(filename).name
+        
+        logger.info(f"📂 Looking for report file:")
+        logger.info(f"   Report ID: {report_id}")
+        logger.info(f"   DB Path: {filename}")
+        logger.info(f"   Full Path: {file_path}")
+        logger.info(f"   Reports Dir: {reports_dir}")
+        logger.info(f"   File Exists: {file_path.exists()}")
+        
+        if not file_path.exists():
+            # Try to list what's actually in the reports directory
+            try:
+                files_in_dir = list(reports_dir.glob("*.pdf" if format == "pdf" else "*.json"))
+                logger.error(f"❌ File not found: {file_path}")
+                logger.error(f"📁 Files in {reports_dir}:")
+                for f in files_in_dir[:10]:  # Show first 10 files
+                    logger.error(f"   - {f.name}")
+            except Exception as e:
+                logger.error(f"Could not list directory: {e}")
             
-            # Get the filename from database
-            filename = report.pdf_path if format == "pdf" else report.json_path
-            if not filename:
-                logger.error(f"❌ Report {report_id} has no {format} path in database")
-                raise HTTPException(status_code=404, detail=f"Report {format.upper()} path not found in database")
-            
-            # Construct full path - Windows-compatible
-            from pathlib import Path
-            reports_dir = Path(settings.REPORTS_DIR).resolve()
-            
-            logger.info(f"=" * 60)
-            logger.info(f"📥 DOWNLOAD REQUEST for Report {report_id}")
-            logger.info(f"=" * 60)
-            logger.info(f"Format requested: {format}")
-            logger.info(f"DB filename: {filename}")
-            logger.info(f"Reports directory: {reports_dir}")
-            logger.info(f"Reports dir exists: {reports_dir.exists()}")
-            
-            # Convert to Path object for proper handling
-            filename_path = Path(filename)
-            logger.info(f"Filename is absolute: {filename_path.is_absolute()}")
-            
-            # If it's already an absolute path, use it directly
-            if filename_path.is_absolute():
-                file_path = filename_path.resolve()
-                logger.info(f"Using absolute path from DB: {file_path}")
-            else:
-                # Otherwise, join with reports directory
-                file_path = (reports_dir / filename).resolve()
-                logger.info(f"Constructed path: {file_path}")
-            
-            logger.info(f"Final resolved path: {file_path}")
-            logger.info(f"File exists: {file_path.exists()}")
-            logger.info(f"File is file: {file_path.is_file()}")
-            
-            if file_path.exists() and file_path.is_file():
-                import os
-                file_size = os.path.getsize(file_path)
-                logger.info(f"File size: {file_size} bytes")
-            
-            if not file_path.exists():
-                logger.error(f"=" * 60)
-                logger.error(f"❌ FILE NOT FOUND")
-                logger.error(f"=" * 60)
-                # List what's actually in the reports directory
-                try:
-                    all_files = list(reports_dir.glob("*"))
-                    logger.error(f"📁 Contents of {reports_dir}:")
-                    logger.error(f"Total files: {len(all_files)}")
-                    pdf_files = [f for f in all_files if f.suffix == '.pdf']
-                    json_files = [f for f in all_files if f.suffix == '.json']
-                    logger.error(f"PDF files: {len(pdf_files)}")
-                    logger.error(f"JSON files: {len(json_files)}")
-                    
-                    # Show relevant files
-                    logger.error(f"\nRelevant files containing 'audit_report_1_20251024':")
-                    for f in all_files:
-                        if 'audit_report_1_20251024' in f.name:
-                            logger.error(f"   - {f.name} ({os.path.getsize(f)} bytes)")
-                except Exception as e:
-                    logger.error(f"Could not list directory: {e}")
-                
-                raise HTTPException(
-                    status_code=404, 
-                    detail=f"Report file not found at: {file_path}"
-                )
-            
-            if not file_path.is_file():
-                logger.error(f"❌ Path exists but is not a file: {file_path}")
-                raise HTTPException(status_code=500, detail="Invalid file path")
-            
-            # Get file size for validation
-            import os
-            file_size = os.path.getsize(file_path)
-            logger.info(f"✅ File found! Size: {file_size} bytes")
-            
-            if file_size == 0:
-                logger.error(f"⚠️  WARNING: File size is 0 bytes!")
-                raise HTTPException(status_code=500, detail="Report file is empty")
-            
-            media_type = "application/pdf" if format == "pdf" else "application/json"
-            
-            logger.info(f"📤 Serving file: {file_path.name}")
-            logger.info(f"   Media type: {media_type}")
-            logger.info(f"   File size: {file_size:,} bytes")
-            logger.info(f"=" * 60)
-            
-            # Return the file
-            return FileResponse(
-                path=str(file_path),
-                filename=f"audit_report_{report_id}.{format}",
-                media_type=media_type
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Report file not found. Expected at: {file_path.name}"
             )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Unexpected error in download endpoint: {type(e).__name__}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+        
+        media_type = "application/pdf" if format == "pdf" else "application/json"
+        
+        logger.info(f"✅ Serving report file: {file_path.name}")
+        return FileResponse(
+            path=str(file_path),
+            filename=f"audit_report_{report_id}.{format}",
+            media_type=media_type
+        )
 
 @app.get("/users/{user_id}/stats", response_model=StatsResponse)
 async def get_user_stats(user_id: int, db: AsyncSession = Depends(get_db)):
