@@ -150,8 +150,10 @@ powershell
 .\apps\backend\test_backend.ps1
 
 🧭 Roadmap
- Add multi-wallet user management
+ Add OAuth
 
+ Add multi-wallet user management
+ 
  Support Bitcoin & Solana blockchains
 
  Integrate live market data & exchange tagging
@@ -163,7 +165,8 @@ powershell
 👥 Contributors
 Name	Role
 Zeal Thomas	Lead Developer / Architect
-CryptoAuditAI Team	Backend, Frontend & AI Engineers
+CryptoAuditAI Team	
+Backend, Frontend & AI Engineers
 
 📜 License
 This project is licensed under the Apache License 2.0.
