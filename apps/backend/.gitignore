@@ -1,0 +1,25 @@
+# Environment files
+.env
+*.env
+
+# Python cache and build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+
+# Virtual environment
+venv/
+env/
+
+# Logs and reports
+*.log
+reports/
+*.sqlite3
+
+# IDE / OS files
+.DS_Store
+.vscode/
+.idea/

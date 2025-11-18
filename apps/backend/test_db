@@ -1,0 +1,29 @@
+import asyncio
+import logging
+from retrieval import RetrievalEngine
+
+logging.basicConfig(level=logging.INFO)
+
+async def main():
+    user_id = 1
+    query = "high risk transaction"
+
+    engine = RetrievalEngine()
+
+    # Index all user transactions
+    await engine.index_user_transactions(user_id)
+
+    # Query for context
+    context = await engine.get_user_context(user_id, query, top_k=5)
+
+    print("\n=== Retrieved Context ===")
+    print(context)
+
+    # Also show structured results
+    results = await engine.query(user_id, query, top_k=5)
+    print("\n=== Structured Results ===")
+    for score, tx in results:
+        print(f"Score: {score:.3f} | TX: {tx}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
