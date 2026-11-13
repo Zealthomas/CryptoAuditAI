@@ -16,7 +16,7 @@ BIP39_SAMPLE = {
     "access", "accident", "account", "accuse", "achieve", "acid", "acoustic",
     "acquire", "action", "actor", "actress", "actual", "adapt", "add", "address",
     "adjust", "admit", "adopt", "adult", "afraid", "again", "age", "agent",
-    "agree", "ahead", "aim", "air", "airport", "aisle", "alarm", "album", "alcohol"
+    "agree", "ahead", "aim", "air", "airport", "aisle", "alarm", "album", "alcohol",
 }
 
 CHAIN_ID_MAP = {
@@ -56,10 +56,12 @@ async def fetch_dexscreener_data(chain: str, address: str) -> Optional[Dict[str,
             response = await client_http.get(f"https://api.dexscreener.com/latest/dex/tokens/{address}")
             if response.status_code != 200:
                 return None
+
             data = response.json()
             pairs = data.get("pairs") or []
             if not pairs:
                 return None
+
             pairs.sort(key=lambda item: float((item.get("liquidity") or {}).get("usd") or 0), reverse=True)
             top = pairs[0]
             return {
@@ -69,7 +71,7 @@ async def fetch_dexscreener_data(chain: str, address: str) -> Optional[Dict[str,
                 "price_usd": top.get("priceUsd"),
                 "txns_24h": top.get("txns", {}).get("h24", {}),
             }
-    except Exception as exc:  # pragma: no cover - best effort external call
+    except Exception as exc:
         print(f"[DexScreener] Warning: {exc}")
         return None
 
@@ -85,10 +87,12 @@ async def fetch_goplus_security(chain: str, address: str) -> Optional[Dict[str, 
             response = await client_http.get(url)
             if response.status_code != 200:
                 return None
+
             payload = response.json()
             data = (payload.get("result") or {}).get(address.lower())
             if not data:
                 return None
+
             return {
                 "is_honeypot": data.get("is_honeypot") == "1",
                 "buy_tax": f"{float(data.get('buy_tax', 0)) * 100:.1f}%",
@@ -98,7 +102,7 @@ async def fetch_goplus_security(chain: str, address: str) -> Optional[Dict[str, 
                 "is_mintable": data.get("is_mintable") == "1",
                 "can_take_back_ownership": data.get("can_take_back_ownership") == "1",
             }
-    except Exception as exc:  # pragma: no cover - best effort external call
+    except Exception as exc:
         print(f"[GoPlus] Warning: {exc}")
         return None
 
