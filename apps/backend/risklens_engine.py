@@ -71,8 +71,7 @@ async def fetch_dexscreener_data(chain: str, address: str) -> Optional[Dict[str,
                 "price_usd": top.get("priceUsd"),
                 "txns_24h": top.get("txns", {}).get("h24", {}),
             }
-    except Exception as exc:
-        print(f"[DexScreener] Warning: {exc}")
+    except Exception:
         return None
 
 
@@ -102,8 +101,7 @@ async def fetch_goplus_security(chain: str, address: str) -> Optional[Dict[str, 
                 "is_mintable": data.get("is_mintable") == "1",
                 "can_take_back_ownership": data.get("can_take_back_ownership") == "1",
             }
-    except Exception as exc:
-        print(f"[GoPlus] Warning: {exc}")
+    except Exception:
         return None
 
 
@@ -177,14 +175,12 @@ Rules:
                 "market_behavior": 30,
                 "project_reputation": 20,
             },
-            "key_findings": [
-                {
-                    "title": "On-chain telemetry retrieved",
-                    "severity": "Low",
-                    "evidence": f"Liquidity: ${dex_data.get('liquidity_usd', 0) if dex_data else 0:,.2f}",
-                    "plain_language_explanation": "Pool contains active DEX trading volume.",
-                }
-            ],
+            "key_findings": [{
+                "title": "On-chain telemetry retrieved",
+                "severity": "Low",
+                "evidence": f"Liquidity: ${dex_data.get('liquidity_usd', 0) if dex_data else 0:,.2f}",
+                "plain_language_explanation": "Pool contains active DEX trading volume.",
+            }],
             "red_flags": [],
             "positive_signals": ["Verified smart contract on-chain"],
             "summary": f"Audit completed for {target}. Moderate risk profile.",
@@ -202,7 +198,7 @@ Rules:
         model="gemini-2.5-pro",
         contents=prompt,
         config=types.GenerateContentConfig(
-            tools=[{"google_search": {}}],
+            tools=[types.Tool(google_search=types.GoogleSearch())],
             response_mime_type="application/json",
             response_schema=RiskReportSchema,
             temperature=0.1,
@@ -232,7 +228,7 @@ Rules:
 
 async def stream_copilot_response(report_context: dict, query: str) -> AsyncGenerator[str, None]:
     if not client:
-        yield "data: {\"text\": \"Copilot: Please configure GEMINI_API_KEY in your .env file to enable live AI responses.\"}\n\n"
+        yield f"data: {json.dumps({'text': 'Copilot: Please configure GEMINI_API_KEY in .env for live AI responses.'})}\n\n"
         yield "data: [DONE]\n\n"
         return
 
@@ -241,7 +237,7 @@ You are the CryptoAuditAI / RiskLens Copilot.
 Report Context:
 {json.dumps(report_context)}
 
-Answer user questions about vulnerabilities, honeypot traits, wallet safety, or smart contract risk in clear, plain language.
+Answer user questions about vulnerabilities, honeypot traits, or wallet safety in clear, plain language.
 Never advise to buy or sell.
 User: {query}
 """
@@ -251,17 +247,14 @@ User: {query}
             model="gemini-2.5-flash",
             contents=instruction,
             config=types.GenerateContentConfig(
-                tools=[{"google_search": {}}],
+                tools=[types.Tool(google_search=types.GoogleSearch())],
                 temperature=0.2,
             ),
         )
-    except Exception as exc:
-        yield f"data: {json.dumps({'text': f'Copilot: Unable to connect to Gemini API: {exc}'})}\n\n"
+        for chunk in stream:
+            if getattr(chunk, "text", None):
+                yield f"data: {json.dumps({'text': chunk.text})}\n\n"
+    except Exception:
+        yield f"data: {json.dumps({'error': 'Copilot response failed.'})}\n\n"
+    finally:
         yield "data: [DONE]\n\n"
-        return
-
-    for chunk in stream:
-        if getattr(chunk, "text", None):
-            yield f"data: {json.dumps({'text': chunk.text})}\n\n"
-
-    yield "data: [DONE]\n\n"
